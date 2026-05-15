@@ -26,8 +26,9 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        # psycopg3 的 SQLAlchemy dialect = postgresql+psycopg (非 psycopg2)
         return (
-            f"postgresql+psycopg2://{self.DB_USER}:{self.DB_PASSWORD}"
+            f"postgresql+psycopg://{self.DB_USER}:{self.DB_PASSWORD}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
 
