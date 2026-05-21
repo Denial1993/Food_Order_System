@@ -87,8 +87,22 @@ def submit_order(
     if table.TableStatus != "ORDERING":
         raise HTTPException(
             status_code=409,
-            detail="訂單已送出或此桌不在點餐狀態，請勿重複送單",
+            detail="此桌不在點餐狀態，請重新掃描 QR Code",
         )
+
+    # ── Session Token 驗證 ───────────────────────────────────────
+    # 驗證顧客帶來的 Token 是否和桌位記錄的 Token 相同。
+    # 如果有人把 QR Code 截圖帶回家，當桌位被新客人開桌後，
+    # Token 已經更換，舊的 Token 就會在這裡被擋下來。
+    #
+    # table.SessionToken 為 None 時代表「舊資料沒有 Token，跳過驗證」
+    # 這樣可以相容尚未升級的舊桌位記錄
+    if table.SessionToken and body.session_token != table.SessionToken:
+        raise HTTPException(
+            status_code=403,
+            detail="連線已過期，請重新掃描 QR Code 入座",
+        )
+
     if not body.cart:
         raise HTTPException(status_code=400, detail="購物車是空的")
 
@@ -174,6 +188,27 @@ def submit_order(
 
 @router.post("/checkout/{order_id}")
 def checkout(order_id: int, db: Session = Depends(get_db)) -> dict:
+    """
+    結帳：OPEN → PAID。
+
+    【為什麼桌況改成 CLEANING 而不是 IDLE？】
+
+    如果直接回 IDLE，桌子立刻變成「可點餐」狀態，
+    任何人只要掃舊的 QR Code 截圖就能把桌子自動開起來並下單。
+
+    改成 CLEANING 後：
+      1. SessionToken 立刻清除 → 舊截圖永遠無效
+      2. 桌子進入「清潔中」狀態 → 無法點餐，無法自動開桌
+      3. 店員確認桌面清潔完畢後，手動點「清桌完成」→ 才回到 IDLE
+      4. 下一組客人掃碼 → 自動開桌 → 產生全新 Token
+
+    攻擊者的唯一成功條件：必須在「店員把桌子設回 IDLE 之後、
+    下一組客人掃碼開桌之前」的短暫空窗內掃碼——
+    但這段時間桌子是 IDLE 而非 ORDERING，
+    攻擊者雖然能自動開桌，但等同於幫下一組開桌，
+    下一組客人的新 Session 會立刻把攻擊者的 Token 覆蓋掉。
+    實務上這個風險極低。
+    """
     order = db.query(FoodOrder).filter(FoodOrder.OrderID == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="訂單不存在")
@@ -182,10 +217,11 @@ def checkout(order_id: int, db: Session = Depends(get_db)) -> dict:
 
     order.OrderStatus = "PAID"
 
-    # 桌況回 IDLE
+    # ── 桌況 → CLEANING（而非直接回 IDLE）──────────────────────
     table = db.query(FoodTable).filter(FoodTable.TableID == order.TableID).first()
     if table:
-        table.TableStatus = "IDLE"
+        table.TableStatus  = "CLEANING"
+        table.SessionToken = None   # ← Token 立刻清除，舊截圖即刻失效
 
     db.commit()
     return {"detail": "結帳成功", "OrderNo": order.OrderNo}

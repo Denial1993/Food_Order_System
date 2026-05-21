@@ -10,7 +10,7 @@ FastAPI 會自動把 return 的 dict 轉成 JSON 回給前端。
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import cast, Date, func  # func = SQL 函式 (sum/count...)
 from sqlalchemy.orm import Session, selectinload
 
@@ -20,6 +20,7 @@ from models import (
     FoodPicture, FoodSystemConfig, FoodTable,
 )
 from schemas.food_admin import FoodAdminIn
+from schemas.system_config import SystemConfigIn
 
 router = APIRouter()
 
@@ -147,16 +148,110 @@ def list_system_config(db: Session = Depends(get_db)) -> list[dict]:
         .order_by(FoodSystemConfig.CodeType, FoodSystemConfig.CodeSeq)
         .all()
     )
-    return [
-        {
-            "CodeID":    r.CodeID,
-            "CodeType":  r.CodeType,
-            "CodeStr":   r.CodeStr,
-            "CodeValue": r.CodeValue,
-            "CodeDesc":  r.CodeDesc,
-        }
-        for r in rows
-    ]
+    return [_config_to_dict(r) for r in rows]
+
+
+def _config_to_dict(r: FoodSystemConfig) -> dict:
+    return {
+        "CodeID":     r.CodeID,
+        "CodeNo":     r.CodeNo,
+        "CodeType":   r.CodeType,
+        "CodeStr":    r.CodeStr,
+        "CodeValue":  r.CodeValue,
+        "RoleID":     r.RoleID,
+        "CodeDesc":   r.CodeDesc,
+        "CodeSeq":    r.CodeSeq,
+        "StatusCode": r.StatusCode,
+    }
+
+
+@router.post("/system-config", status_code=201)
+def create_system_config(body: SystemConfigIn, db: Session = Depends(get_db)) -> dict:
+    """
+    新增一筆系統參數。
+    若 (CodeType, CodeStr) 已存在且狀態為啟用，回 409 避免重複鍵。
+    """
+    dup = (
+        db.query(FoodSystemConfig)
+        .filter(
+            FoodSystemConfig.CodeType == body.CodeType,
+            FoodSystemConfig.CodeStr  == body.CodeStr,
+            FoodSystemConfig.StatusCode == "111",
+        )
+        .first()
+    )
+    if dup:
+        raise HTTPException(status_code=409, detail=f"{body.CodeType} / {body.CodeStr} 已存在")
+
+    row = FoodSystemConfig(
+        CodeNo     = body.CodeNo,
+        CodeType   = body.CodeType,
+        CodeStr    = body.CodeStr,
+        CodeValue  = body.CodeValue,
+        RoleID     = body.RoleID,
+        CodeDesc   = body.CodeDesc,
+        CodeSeq    = body.CodeSeq,
+        StatusCode = "111",
+        AddUser    = "admin",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _config_to_dict(row)
+
+
+@router.put("/system-config/{code_id}")
+def update_system_config(code_id: int, body: SystemConfigIn, db: Session = Depends(get_db)) -> dict:
+    row: FoodSystemConfig | None = (
+        db.query(FoodSystemConfig)
+        .filter(FoodSystemConfig.CodeID == code_id, FoodSystemConfig.StatusCode == "111")
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="系統參數不存在")
+
+    # 若鍵改了，檢查不可撞到其他啟用中的鍵
+    if (row.CodeType, row.CodeStr) != (body.CodeType, body.CodeStr):
+        dup = (
+            db.query(FoodSystemConfig)
+            .filter(
+                FoodSystemConfig.CodeType == body.CodeType,
+                FoodSystemConfig.CodeStr  == body.CodeStr,
+                FoodSystemConfig.StatusCode == "111",
+                FoodSystemConfig.CodeID  != code_id,
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(status_code=409, detail=f"{body.CodeType} / {body.CodeStr} 已存在")
+
+    row.CodeNo    = body.CodeNo
+    row.CodeType  = body.CodeType
+    row.CodeStr   = body.CodeStr
+    row.CodeValue = body.CodeValue
+    row.RoleID    = body.RoleID
+    row.CodeDesc  = body.CodeDesc
+    row.CodeSeq   = body.CodeSeq
+    row.UpdUser   = "admin"
+
+    db.commit()
+    db.refresh(row)
+    return _config_to_dict(row)
+
+
+@router.delete("/system-config/{code_id}", status_code=204)
+def delete_system_config(code_id: int, db: Session = Depends(get_db)):
+    """軟刪除：StatusCode → '000'，避免影響歷史稽核。"""
+    row = (
+        db.query(FoodSystemConfig)
+        .filter(FoodSystemConfig.CodeID == code_id, FoodSystemConfig.StatusCode == "111")
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="系統參數不存在")
+    row.StatusCode = "000"
+    row.UpdUser    = "admin"
+    db.commit()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -358,3 +453,111 @@ def delete_food(food_id: int, db: Session = Depends(get_db)):
 
     food.StatusCode = "000"
     db.commit()
+
+
+# ═════════════════════════════════════════════════════════════════
+# 訂單管理
+# ═════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────
+# GET /api/admin/orders
+# ─────────────────────────────────────────────────────────────────
+@router.get("/orders")
+def list_orders_admin(
+    status: str | None = Query(None, description="篩選狀態: OPEN / PAID / CANCELLED"),
+    date:   str | None = Query(None, description="篩選日期 YYYY-MM-DD，不填代表今天"),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """
+    後台訂單列表，供廚房/收銀台使用。
+
+    【查詢參數說明】
+    - status: 不填 = 全部狀態；填 OPEN = 只看待備餐
+    - date:   不填 = 今天；填 2026-05-21 = 看指定日期的訂單
+
+    【為什麼加 selectinload？】
+    orders 下面有 details（明細），details 下面有 food（餐點名稱），
+    還有 table（桌位資訊）。
+    用 selectinload 一次把三層關聯全部載入，
+    避免每一筆訂單都多查一次 DB（N+1 問題）。
+    """
+    # ① 解析日期（預設今天）
+    if date is None:
+        filter_date = datetime.now().date()
+    else:
+        try:
+            filter_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
+
+    # ② 建立查詢
+    q = (
+        db.query(FoodOrder)
+        .options(
+            selectinload(FoodOrder.details).selectinload(FoodOrderDetail.food),
+            selectinload(FoodOrder.table),
+        )
+        .filter(
+            FoodOrder.StatusCode == "111",
+            cast(FoodOrder.AddDate, Date) == filter_date,
+        )
+    )
+
+    # ③ 狀態篩選（選填）
+    if status:
+        q = q.filter(FoodOrder.OrderStatus == status)
+
+    orders = q.order_by(FoodOrder.AddDate.desc()).all()
+    return [_order_to_dict(o) for o in orders]
+
+
+def _order_to_dict(o: FoodOrder) -> dict:
+    """把 FoodOrder ORM 物件轉成可序列化的 dict（含明細）"""
+    return {
+        "OrderID":     o.OrderID,
+        "OrderNo":     o.OrderNo,
+        "TableNo":     o.table.TableNo   if o.table else "?",
+        "TableName":   o.table.TableName if o.table else None,
+        "AddDate":     o.AddDate.strftime("%Y-%m-%d %H:%M:%S") if o.AddDate else "",
+        "SubTotal":    float(o.SubTotal),
+        "ServiceFee":  float(o.ServiceFee),
+        "TotalAmount": float(o.TotalAmount),
+        "OrderStatus": o.OrderStatus,
+        # 方便前端顯示「共 N 道」
+        "ItemCount":   sum(d.Quantity for d in o.details),
+        "details": [
+            {
+                "FoodName":  d.food.FoodName if d.food else "（餐點已刪除）",
+                "Quantity":  d.Quantity,
+                "UnitPrice": float(d.UnitPrice),
+                "Subtotal":  float(d.Subtotal),
+                "Nickname":  d.Nickname,
+                "Note":      d.Note,
+            }
+            for d in o.details
+        ],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# POST /api/admin/orders/{order_id}/cancel
+# ─────────────────────────────────────────────────────────────────
+@router.post("/orders/{order_id}/cancel")
+def cancel_order(order_id: int, db: Session = Depends(get_db)) -> dict:
+    """
+    取消訂單：OPEN → CANCELLED。
+    只有「待備餐」的訂單才能取消（已結帳的不能反悔）。
+
+    注意：取消訂單不會自動讓桌位回到 IDLE，
+    因為同一桌可能還有其他 OPEN 訂單。
+    桌位清除請由「清桌」功能處理。
+    """
+    order = db.query(FoodOrder).filter(FoodOrder.OrderID == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.OrderStatus != "OPEN":
+        raise HTTPException(status_code=409, detail="只有待備餐的訂單可以取消")
+
+    order.OrderStatus = "CANCELLED"
+    db.commit()
+    return {"detail": "訂單已取消", "OrderNo": order.OrderNo}

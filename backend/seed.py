@@ -165,7 +165,12 @@ def seed() -> None:
             dict(FoodName="古典巧克力蛋糕", FoodDesc="比利時黑巧克力，入口即化，附香草冰淇淋",         Price="90",  Cats=["甜點"],             Pic="蛋糕",     Sort=2),
         ]
 
-        food_objs = []
+        # ── 第一步：建立餐點物件，先不指定分類 ─────────────────────
+        # 原因：多對多中間表 (Food_FoodCategory) 的 INSERT 需要知道 FoodID，
+        # 但 FoodID 是資料庫 autoincrement 的，flush() 之後才會有值。
+        # 所以必須先 add + flush 拿到 ID，再賦值 categories。
+        food_objs    = []
+        food_cats    = []   # 對應的分類名稱 list，暫存等 flush 後再用
         for f in foods_data:
             food_obj = FoodData(
                 FoodName    = f["FoodName"],
@@ -177,13 +182,17 @@ def seed() -> None:
                 StatusCode  = "111",
                 AddUser     = "seed",
             )
-            # 多對多分類：直接把 FoodCategory 物件指定給 categories list
-            # SQLAlchemy 會自動幫你 INSERT 對應的 Food_FoodCategory 中間表記錄
-            food_obj.categories = [cat[name] for name in f["Cats"]]
             food_objs.append(food_obj)
+            food_cats.append(f["Cats"])
 
         db.add_all(food_objs)
-        db.flush()
+        db.flush()   # ← 這裡讓 DB 分配好所有 FoodID
+
+        # ── 第二步：flush 後才指定分類（SQLAlchemy 才能正確寫中間表）───
+        for food_obj, cats in zip(food_objs, food_cats):
+            food_obj.categories = [cat[name] for name in cats]
+
+        db.flush()   # ← 把 Food_FoodCategory 中間表的記錄寫入
         print(f"✅ 餐點建立: {len(food_objs)} 道（部分餐點跨多分類）")
 
         # ── 8. 系統參數 ───────────────────────────────────────────

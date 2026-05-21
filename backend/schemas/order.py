@@ -12,8 +12,9 @@ class CartItemIn(BaseModel):
 
 class OrderSubmitIn(BaseModel):
     """POST /orders/submit/{table_id} 的 Request Body"""
-    cart: list[CartItemIn]
-    nickname: str | None = None   # 下單人暱稱
+    cart:          list[CartItemIn]
+    nickname:      str | None = None    # 下單人暱稱
+    session_token: str | None = None    # 開桌時拿到的 UUID，驗證是否為本次入座的客人
 
 
 class OrderDetailOut(BaseModel):

@@ -1,11 +1,17 @@
 <script setup lang="ts">
 /**
  * 顧客端點餐畫面 (Mobile-First RWD)。
- * 規格書對應:
- *  - 掃碼後從 URL ?table= 取得桌號
- *  - 暱稱優先讀 LocalStorage,新顧客需輸入後存入
- *  - WebSocket 連線至 /ws/table/{TableID} 接收同桌共用購物車
- *  - 桌況為 IDLE 時提示「請通知店員開桌」(防呆機制)
+ *
+ * 【點餐流程】
+ *  1. 掃碼 → 從 URL ?table= 取得桌號
+ *  2. 輸入暱稱（存 LocalStorage，下次不用再輸）
+ *  3. 若桌子是 IDLE → 自動呼叫開桌 API → ORDERING（不需要等店員）
+ *  4. 後端回傳 SessionToken → 存 localStorage（安全機制）
+ *  5. 正常點餐、送單（送單時帶 SessionToken，後端驗證是否為本次入座）
+ *
+ * 【SessionToken 防護】
+ *  下次新客人入座時，開桌 API 會產生新的 Token。
+ *  舊截圖的顧客送單時帶的是舊 Token → 後端拒絕 → 無法亂點餐。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -37,9 +43,10 @@ interface Category {
   CategoryName: string
 }
 interface TableInfo {
-  TableID: number
-  TableNo: string
-  TableStatus: 'IDLE' | 'ORDERING' | 'CLEANING'
+  TableID:      number
+  TableNo:      string
+  TableStatus:  'IDLE' | 'ORDERING' | 'CLEANING'
+  SessionToken: string | null   // 後端回傳的 Session Token
 }
 
 const route  = useRoute()
@@ -53,8 +60,22 @@ const foods = ref<Food[]>([])
 const activeCat = ref<number | null>(null)
 const cart = ref<Record<number, number>>({})
 const nicknameInput = ref(customer.nickname)
-const askNickname = computed(() => !customer.nickname)
+const askNickname   = computed(() => !customer.nickname)
+const opening       = ref(false)   // 自動開桌 API 呼叫中
 let ws: WebSocket | null = null
+
+// Session Token 的 localStorage key（每桌獨立存）
+const sessionKey = computed(() => `food.session.table.${tableNo.value}`)
+
+/** 取出目前存在 localStorage 的 session token */
+function getLocalToken(): string | null {
+  return localStorage.getItem(sessionKey.value)
+}
+/** 把從後端拿到的 token 存進 localStorage */
+function saveToken(token: string | null) {
+  if (token) localStorage.setItem(sessionKey.value, token)
+  else       localStorage.removeItem(sessionKey.value)
+}
 
 // 送單狀態
 const submitting = ref(false)
@@ -79,9 +100,16 @@ async function loadAll() {
       api.get<Category[]>('/menu/categories'),
       api.get<Food[]>('/menu/foods'),
     ])
-    table.value = t.data
+    table.value      = t.data
     categories.value = c.data
-    foods.value = f.data
+    foods.value      = f.data
+
+    // 如果桌子已經是 ORDERING，且後端有 SessionToken，
+    // 代表目前這桌已有人入座（可能是同桌其他人先開桌了）
+    // 把 Token 存起來供後續送單使用
+    if (t.data.SessionToken) {
+      saveToken(t.data.SessionToken)
+    }
   } catch {
     /* 後端尚未啟動時不影響畫面 */
   }
@@ -104,8 +132,32 @@ function addToCart(food: Food) {
   ws?.send(JSON.stringify({ type: 'CART_SYNC', payload: { cart: cart.value } }))
 }
 
-function confirmNickname() {
-  customer.setNickname(nicknameInput.value)
+/**
+ * 顧客確認暱稱後：
+ *  - 如果桌子是 IDLE → 自動呼叫開桌 API（不需要等店員！）
+ *  - 開桌成功 → 後端回傳新 SessionToken → 存 localStorage
+ *  - 然後連接 WebSocket 開始同步購物車
+ */
+async function confirmNickname() {
+  if (!nicknameInput.value.trim()) return
+  customer.setNickname(nicknameInput.value.trim())
+
+  // 桌子是 IDLE → 自動開桌
+  if (table.value?.TableStatus === 'IDLE') {
+    opening.value = true
+    try {
+      const res = await api.post<TableInfo>(`/tables/${table.value.TableNo}/open`)
+      // 更新本地桌況 + 儲存新 Token
+      table.value = res.data
+      saveToken(res.data.SessionToken)
+    } catch {
+      // 如果開桌失敗（可能有人搶先開了），重新拉一次桌況
+      await loadAll()
+    } finally {
+      opening.value = false
+    }
+  }
+
   connectWs()
 }
 
@@ -126,7 +178,11 @@ async function submitOrder() {
   try {
     const res = await api.post<OrderResult>(
       `/orders/submit/${table.value.TableID}`,
-      { cart: cartItems, nickname: customer.nickname || 'guest' },
+      {
+        cart:          cartItems,
+        nickname:      customer.nickname || 'guest',
+        session_token: getLocalToken(),   // ← 帶上 Token，後端驗證是否為本次入座
+      },
     )
     orderResult.value = res.data
     cart.value = {}   // 清空購物車
@@ -154,13 +210,22 @@ onBeforeUnmount(() => ws?.close())
     <div v-if="askNickname" class="fixed inset-0 bg-black/40 flex items-center justify-center p-6 z-30">
       <div class="card w-full max-w-sm space-y-4">
         <h2 class="text-lg font-semibold">歡迎光臨 桌號 {{ tableNo }}</h2>
-        <p class="text-sm text-slate-500">請輸入暱稱,方便同桌夥伴看到誰點了什麼</p>
+        <p class="text-sm text-slate-500">請輸入暱稱，方便同桌夥伴看到誰點了什麼</p>
         <input
           v-model="nicknameInput"
           class="w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
-          placeholder="例如:Daniel_丹丹"
+          placeholder="例如：Daniel"
+          @keyup.enter="confirmNickname"
         />
-        <button class="btn-primary w-full" :disabled="!nicknameInput.trim()" @click="confirmNickname">開始點餐</button>
+        <button
+          class="btn-primary w-full"
+          :disabled="!nicknameInput.trim() || opening"
+          @click="confirmNickname"
+        >
+          <!-- 自動開桌中顯示 loading，避免顧客重複點擊 -->
+          <span v-if="opening">開桌中...</span>
+          <span v-else>開始點餐</span>
+        </button>
       </div>
     </div>
 
@@ -183,12 +248,10 @@ onBeforeUnmount(() => ws?.close())
           <div class="text-sm text-slate-600">Hi, {{ customer.nickname || '—' }}</div>
         </div>
       </div>
-      <!-- 桌況防呆提示 -->
-      <div v-if="table?.TableStatus === 'IDLE'" class="bg-amber-100 text-amber-800 text-sm px-4 py-2">
-        ⚠️ 此桌尚未開桌,請通知店員協助開桌後即可點餐
-      </div>
-      <div v-else-if="table?.TableStatus === 'CLEANING'" class="bg-rose-100 text-rose-800 text-sm px-4 py-2">
-        ⚠️ 此桌結帳後連結已失效
+      <!-- 桌況提示（CLEANING = 結帳後等待清潔，還不能點餐）-->
+      <div v-if="table?.TableStatus === 'CLEANING'" class="bg-amber-100 text-amber-800 text-sm px-4 py-2 flex items-center gap-2">
+        <span>🧹</span>
+        <span>此桌正在清潔整理，請稍候。店員完成後即可掃碼入座點餐。</span>
       </div>
 
       <!-- 分類 tabs -->
