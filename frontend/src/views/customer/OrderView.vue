@@ -8,9 +8,18 @@
  *  - 桌況為 IDLE 時提示「請通知店員開桌」(防呆機制)
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api from '@/api/client'
 import { useCustomerStore } from '@/stores/customer'
+
+// 送單結果型別
+interface OrderResult {
+  OrderID: number
+  OrderNo: string
+  SubTotal: number
+  ServiceFee: number
+  TotalAmount: number
+}
 
 interface Food {
   FoodID: number
@@ -29,7 +38,8 @@ interface TableInfo {
   TableStatus: 'IDLE' | 'ORDERING' | 'CLEANING'
 }
 
-const route = useRoute()
+const route  = useRoute()
+const router = useRouter()
 const customer = useCustomerStore()
 
 const tableNo = computed(() => String(route.query.table ?? ''))
@@ -41,6 +51,11 @@ const cart = ref<Record<number, number>>({})
 const nicknameInput = ref(customer.nickname)
 const askNickname = computed(() => !customer.nickname)
 let ws: WebSocket | null = null
+
+// 送單狀態
+const submitting = ref(false)
+const orderResult = ref<OrderResult | null>(null)   // 送單成功後的訂單資訊
+const submitError = ref('')                          // 送單失敗訊息
 
 const filteredFoods = computed(() =>
   activeCat.value === null ? foods.value : foods.value.filter((f) => f.CategoryID === activeCat.value),
@@ -87,6 +102,38 @@ function confirmNickname() {
   connectWs()
 }
 
+async function submitOrder() {
+  if (!cartTotal.value || !table.value || submitting.value) return
+  submitting.value = true
+  submitError.value = ''
+
+  // 把 cart (Record<FoodID, qty>) 轉成後端要的格式
+  const cartItems = Object.entries(cart.value)
+    .filter(([, qty]) => qty > 0)
+    .map(([foodId, qty]) => ({
+      food_id: Number(foodId),
+      quantity: qty,
+      nickname: customer.nickname || 'guest',
+    }))
+
+  try {
+    const res = await api.post<OrderResult>(
+      `/orders/submit/${table.value.TableID}`,
+      { cart: cartItems, nickname: customer.nickname || 'guest' },
+    )
+    orderResult.value = res.data
+    cart.value = {}   // 清空購物車
+    // 通知同桌購物車已清空
+    ws?.send(JSON.stringify({ type: 'CART_SYNC', payload: { cart: {} } }))
+  } catch (err: unknown) {
+    const msg = (err as { response?: { data?: { detail?: string } } })
+      ?.response?.data?.detail
+    submitError.value = msg || '送單失敗，請再試一次'
+  } finally {
+    submitting.value = false
+  }
+}
+
 onMounted(async () => {
   await loadAll()
   if (customer.nickname) connectWs()
@@ -117,7 +164,17 @@ onBeforeUnmount(() => ws?.close())
           <div class="text-xs text-slate-400">桌號</div>
           <div class="font-semibold">{{ tableNo || '—' }}</div>
         </div>
-        <div class="text-sm text-slate-600">Hi, {{ customer.nickname || '—' }}</div>
+        <div class="flex items-center gap-3">
+          <!-- 我的訂單入口 -->
+          <button
+            v-if="table"
+            class="text-xs text-brand-600 border border-brand-200 rounded-full px-3 py-1 hover:bg-brand-50"
+            @click="router.push({ path: '/my-orders', query: { table: tableNo, tableId: table.TableID } })"
+          >
+            訂單查詢
+          </button>
+          <div class="text-sm text-slate-600">Hi, {{ customer.nickname || '—' }}</div>
+        </div>
       </div>
       <!-- 桌況防呆提示 -->
       <div v-if="table?.TableStatus === 'IDLE'" class="bg-amber-100 text-amber-800 text-sm px-4 py-2">
@@ -171,6 +228,39 @@ onBeforeUnmount(() => ws?.close())
       </article>
     </section>
 
+    <!-- 送單成功彈窗 -->
+    <div v-if="orderResult" class="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-40">
+      <div class="card w-full max-w-sm space-y-4 text-center">
+        <div class="text-4xl">🎉</div>
+        <h2 class="text-xl font-bold text-brand-600">訂單已送出！</h2>
+        <div class="text-sm text-slate-600 space-y-1">
+          <p>訂單編號：<span class="font-mono font-semibold">{{ orderResult.OrderNo }}</span></p>
+          <p>餐點小計：NT$ {{ orderResult.SubTotal }}</p>
+          <p v-if="orderResult.ServiceFee > 0">服務費：NT$ {{ orderResult.ServiceFee }}</p>
+          <p class="text-lg font-bold text-slate-900 pt-1">合計：NT$ {{ orderResult.TotalAmount }}</p>
+        </div>
+        <p class="text-xs text-slate-400">請稍候，餐點準備中...</p>
+        <div class="flex flex-col gap-2">
+          <button
+            class="btn-primary w-full"
+            @click="router.push({ path: '/my-orders', query: { table: tableNo, tableId: table?.TableID } })"
+          >
+            查看訂單明細
+          </button>
+          <button class="btn-ghost w-full" @click="orderResult = null">繼續瀏覽 / 加點</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 送單錯誤提示 -->
+    <div
+      v-if="submitError"
+      class="fixed bottom-24 inset-x-4 bg-rose-600 text-white text-sm rounded-xl px-4 py-3 z-40 flex justify-between items-center"
+    >
+      <span>{{ submitError }}</span>
+      <button class="ml-3 text-white/70 hover:text-white" @click="submitError = ''">✕</button>
+    </div>
+
     <!-- 底部購物車摘要 -->
     <footer class="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 p-3">
       <div class="flex items-center justify-between max-w-screen-md mx-auto">
@@ -178,7 +268,15 @@ onBeforeUnmount(() => ws?.close())
           <div class="text-xs text-slate-500">小計</div>
           <div class="text-xl font-bold">NT$ {{ cartTotal }}</div>
         </div>
-        <button class="btn-primary" :disabled="!cartTotal">送出訂單</button>
+        <!-- ✅ 修正：補上 @click，加入 loading 狀態 -->
+        <button
+          class="btn-primary min-w-24"
+          :disabled="!cartTotal || submitting"
+          @click="submitOrder"
+        >
+          <span v-if="submitting">送出中...</span>
+          <span v-else>送出訂單</span>
+        </button>
       </div>
     </footer>
   </main>

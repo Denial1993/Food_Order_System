@@ -12,6 +12,11 @@ const routes: RouteRecordRaw[] = [
     name: 'order',
     component: () => import('@/views/customer/OrderView.vue'),
   },
+  {
+    path: '/my-orders',
+    name: 'my-orders',
+    component: () => import('@/views/customer/MyOrdersView.vue'),
+  },
   // 店家後台 (Tablet/Desktop)
   {
     path: '/admin',
