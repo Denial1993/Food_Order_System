@@ -21,12 +21,16 @@ interface OrderResult {
   TotalAmount: number
 }
 
+interface CategoryBrief {
+  CategoryID:   number
+  CategoryName: string
+}
 interface Food {
-  FoodID: number
-  FoodName: string
-  Price: number
-  CategoryID: number | null
-  picture?: { PicturePath: string } | null
+  FoodID:     number
+  FoodName:   string
+  Price:      number
+  categories: CategoryBrief[]   // ← 多對多，一道菜可屬於多個分類
+  picture?:   { PicturePath: string } | null
 }
 interface Category {
   CategoryID: number
@@ -57,9 +61,12 @@ const submitting = ref(false)
 const orderResult = ref<OrderResult | null>(null)   // 送單成功後的訂單資訊
 const submitError = ref('')                          // 送單失敗訊息
 
-const filteredFoods = computed(() =>
-  activeCat.value === null ? foods.value : foods.value.filter((f) => f.CategoryID === activeCat.value),
-)
+const filteredFoods = computed(() => {
+  if (activeCat.value === null) return foods.value
+  // .some() = 只要任一分類符合就顯示（多對多過濾）
+  // 例：招牌雞腿飯 categories=[熱門推薦, 主食]，點「主食」tab 也能看到它
+  return foods.value.filter(f => f.categories.some(c => c.CategoryID === activeCat.value))
+})
 const cartTotal = computed(() =>
   foods.value.reduce((sum, f) => sum + (cart.value[f.FoodID] ?? 0) * Number(f.Price), 0),
 )

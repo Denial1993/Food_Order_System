@@ -25,9 +25,19 @@ def list_foods(
 ) -> list[FoodData]:
     q = (
         db.query(FoodData)
-        .options(selectinload(FoodData.picture), selectinload(FoodData.category))
+        .options(
+            selectinload(FoodData.categories),   # 多對多，一次載入所有分類
+            selectinload(FoodData.picture),
+        )
         .filter(FoodData.IsAvailable == "Y", FoodData.StatusCode == "111")
     )
+
     if category_id is not None:
-        q = q.filter(FoodData.CategoryID == category_id)
+        # 多對多過濾：.any() 會產生 EXISTS 子查詢
+        # 等同於 SQL: WHERE EXISTS (
+        #   SELECT 1 FROM Food_FoodCategory fc
+        #   WHERE fc.FoodID = Food_FoodData.FoodID AND fc.CategoryID = :category_id
+        # )
+        q = q.filter(FoodData.categories.any(FoodCategory.CategoryID == category_id))
+
     return q.order_by(FoodData.Sort).all()

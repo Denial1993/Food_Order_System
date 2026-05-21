@@ -183,12 +183,12 @@ def list_categories(db: Session = Depends(get_db)) -> list[dict]:
 def list_foods_admin(db: Session = Depends(get_db)) -> list[dict]:
     """
     回傳所有餐點（StatusCode='111'，但 IsAvailable 不過濾）
-    使用 selectinload 一次載入 category 和 picture 關聯，避免 N+1 查詢。
+    使用 selectinload 一次載入 categories（多對多）和 picture 關聯，避免 N+1 查詢。
     """
     rows = (
         db.query(FoodData)
         .options(
-            selectinload(FoodData.category),
+            selectinload(FoodData.categories),   # ← 多對多，載入所有分類
             selectinload(FoodData.picture),
         )
         .filter(FoodData.StatusCode == "111")
@@ -201,19 +201,22 @@ def list_foods_admin(db: Session = Depends(get_db)) -> list[dict]:
 def _food_to_dict(r: FoodData) -> dict:
     """把 FoodData ORM 物件轉成可序列化的 dict"""
     return {
-        "FoodID":       r.FoodID,
-        "FoodName":     r.FoodName,
-        "FoodDesc":     r.FoodDesc,
-        "Price":        float(r.Price),
-        "CategoryID":   r.CategoryID,
-        "CategoryName": r.category.CategoryName if r.category else None,
-        "IsAvailable":  r.IsAvailable,
-        "Sort":         r.Sort,
-        "StatusCode":   r.StatusCode,
-        "PictureID":    r.PictureID,
-        "PicturePath":  r.picture.PicturePath if r.picture else None,
-        "PictureName":  r.picture.PictureName if r.picture else None,
-        "AltText":      r.picture.AltText     if r.picture else None,
+        "FoodID":      r.FoodID,
+        "FoodName":    r.FoodName,
+        "FoodDesc":    r.FoodDesc,
+        "Price":       float(r.Price),
+        # categories 是一個 list，每個元素含 CategoryID 和 CategoryName
+        "categories":  [
+            {"CategoryID": c.CategoryID, "CategoryName": c.CategoryName}
+            for c in r.categories
+        ],
+        "IsAvailable": r.IsAvailable,
+        "Sort":        r.Sort,
+        "StatusCode":  r.StatusCode,
+        "PictureID":   r.PictureID,
+        "PicturePath": r.picture.PicturePath if r.picture else None,
+        "PictureName": r.picture.PictureName if r.picture else None,
+        "AltText":     r.picture.AltText     if r.picture else None,
     }
 
 
@@ -242,27 +245,31 @@ def create_food(body: FoodAdminIn, db: Session = Depends(get_db)) -> dict:
         db.flush()          # flush 讓 DB 先分配 PictureID，但還沒 commit
         picture_id = pic.PictureID
 
-    # ② 建立餐點
+    # ② 建立餐點（不再有 CategoryID 欄位，改用多對多）
     food = FoodData(
         FoodName    = body.FoodName,
         FoodDesc    = body.FoodDesc,
         Price       = body.Price,
-        CategoryID  = body.CategoryID,
         PictureID   = picture_id,
         IsAvailable = body.IsAvailable,
         Sort        = body.Sort,
         StatusCode  = "111",
     )
     db.add(food)
+    db.flush()   # 先取得 FoodID，才能建立中間表關聯
+
+    # ③ 設定多對多分類（SQLAlchemy 會自動處理中間表的 INSERT）
+    if body.CategoryIDs:
+        cat_objs = db.query(FoodCategory).filter(
+            FoodCategory.CategoryID.in_(body.CategoryIDs)
+        ).all()
+        food.categories = cat_objs
+
     db.commit()
     db.refresh(food)
-
-    # refresh 只會更新 food 物件，關聯 category/picture 需要重新 eager load
-    db.refresh(food)
-    if food.PictureID:
-        food.picture   # 觸發 lazy load（此時 session 仍開著）
-    if food.CategoryID:
-        food.category
+    # 觸發 lazy load，讓 _food_to_dict 可以讀到關聯資料
+    _ = food.categories
+    _ = food.picture
 
     return _food_to_dict(food)
 
@@ -279,10 +286,13 @@ def update_food(food_id: int, body: FoodAdminIn, db: Session = Depends(get_db)) 
     - 如果原本沒圖片但傳入 PicturePath → 新建圖片記錄
     - 如果 PicturePath 為空 → 不動圖片（保留原來的）
     """
-    # 用 options 一起撈關聯，省去後面的 lazy load 問題
+    # 用 options 一起撈關聯（categories + picture）
     food: FoodData | None = (
         db.query(FoodData)
-        .options(selectinload(FoodData.picture))
+        .options(
+            selectinload(FoodData.categories),
+            selectinload(FoodData.picture),
+        )
         .filter(FoodData.FoodID == food_id, FoodData.StatusCode == "111")
         .first()
     )
@@ -293,19 +303,22 @@ def update_food(food_id: int, body: FoodAdminIn, db: Session = Depends(get_db)) 
     food.FoodName    = body.FoodName
     food.FoodDesc    = body.FoodDesc
     food.Price       = body.Price
-    food.CategoryID  = body.CategoryID
     food.IsAvailable = body.IsAvailable
     food.Sort        = body.Sort
 
-    # ② 處理圖片
+    # ② 更新多對多分類（直接覆蓋整個 categories list，SQLAlchemy 自動處理中間表）
+    cat_objs = db.query(FoodCategory).filter(
+        FoodCategory.CategoryID.in_(body.CategoryIDs)
+    ).all() if body.CategoryIDs else []
+    food.categories = cat_objs
+
+    # ③ 處理圖片
     if body.PicturePath:
         if food.picture:
-            # 直接更新現有圖片記錄
             food.picture.PicturePath = body.PicturePath
             food.picture.PictureName = body.PictureName or body.FoodName
             food.picture.AltText     = body.AltText
         else:
-            # 新建一筆圖片記錄
             pic = FoodPicture(
                 PictureName = body.PictureName or body.FoodName,
                 PicturePath = body.PicturePath,
@@ -318,12 +331,8 @@ def update_food(food_id: int, body: FoodAdminIn, db: Session = Depends(get_db)) 
 
     db.commit()
     db.refresh(food)
-
-    # 重新 eager load 關聯
-    if food.CategoryID:
-        food.category
-    if food.PictureID:
-        food.picture
+    _ = food.categories
+    _ = food.picture
 
     return _food_to_dict(food)
 
