@@ -13,6 +13,42 @@
 import { computed, onMounted, ref } from 'vue'
 import api from '@/api/client'   // 我們自己包好的 axios，會自動帶 baseURL 和 Token
 
+// ── 歷史營收 ─────────────────────────────────────────────────────
+type RevenueMode = 'annual' | 'monthly' | 'daily'
+interface RevenueData { mode: RevenueMode; labels: string[]; values: number[]; total: number }
+
+const revenueMode   = ref<RevenueMode>('annual')
+const revenueYear   = ref(new Date().getFullYear())
+const revenueMonth  = ref(new Date().getMonth() + 1)
+const revenueData   = ref<RevenueData | null>(null)
+const revenueLoading = ref(false)
+
+const currentYear = new Date().getFullYear()
+// 提供年份下拉：近 3 年
+const yearOptions = [currentYear, currentYear - 1, currentYear - 2]
+const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
+
+async function loadRevenue() {
+  revenueLoading.value = true
+  try {
+    const params: Record<string, string | number> = { mode: revenueMode.value }
+    if (revenueMode.value !== 'annual') params.year = revenueYear.value
+    if (revenueMode.value === 'daily') params.month = revenueMonth.value
+    const res = await api.get<RevenueData>('/admin/revenue', { params })
+    revenueData.value = res.data
+  } catch {
+    revenueData.value = null
+  } finally {
+    revenueLoading.value = false
+  }
+}
+
+/** 最大值，用來計算進度條比例 */
+const revenueMax = computed(() => {
+  const vals = revenueData.value?.values ?? []
+  return Math.max(...vals, 1)   // 避免除以 0
+})
+
 // ── 資料型別定義（TypeScript interface）──────────────────────────
 // 這只是「告訴 TypeScript 這個物件長什麼樣子」，不影響執行
 interface RecentOrder {
@@ -114,7 +150,10 @@ async function loadDashboard() {
  * 類似 Python 的 __init__，但是在「畫面出現後」才跑
  * 在這裡呼叫 API 是最常見的用法
  */
-onMounted(loadDashboard)
+onMounted(() => {
+  loadDashboard()
+  loadRevenue()
+})
 </script>
 
 <template>
@@ -268,6 +307,86 @@ onMounted(loadDashboard)
       </div>
 
     </template>
+
+    <!-- ④ 歷史營收分析 -->
+    <div class="card space-y-4">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 class="font-semibold text-slate-700">營業額分析</h2>
+
+        <!-- 模式切換 -->
+        <div class="flex rounded-lg overflow-hidden border border-slate-200 text-sm">
+          <button
+            v-for="m in [['annual','年度'],['monthly','月份'],['daily','日']] as [RevenueMode, string][]"
+            :key="m[0]"
+            class="px-3 py-1 transition"
+            :class="revenueMode === m[0]
+              ? 'bg-brand-600 text-white'
+              : 'bg-white text-slate-600 hover:bg-slate-50'"
+            @click="revenueMode = m[0]; loadRevenue()"
+          >{{ m[1] }}</button>
+        </div>
+
+        <!-- 年份下拉（monthly / daily 才出現）-->
+        <select
+          v-if="revenueMode !== 'annual'"
+          v-model="revenueYear"
+          class="text-sm rounded-lg border border-slate-200 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-400"
+          @change="loadRevenue"
+        >
+          <option v-for="y in yearOptions" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+
+        <!-- 月份下拉（daily 才出現）-->
+        <select
+          v-if="revenueMode === 'daily'"
+          v-model="revenueMonth"
+          class="text-sm rounded-lg border border-slate-200 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-400"
+          @change="loadRevenue"
+        >
+          <option v-for="m in monthOptions" :key="m" :value="m">{{ m }} 月</option>
+        </select>
+
+        <span v-if="revenueData" class="ml-auto text-sm text-slate-500">
+          合計 <span class="font-bold text-slate-800">NT$ {{ revenueData.total.toLocaleString() }}</span>
+        </span>
+      </div>
+
+      <!-- Loading 骨架 -->
+      <div v-if="revenueLoading" class="space-y-2">
+        <div v-for="i in 3" :key="i" class="flex items-center gap-2">
+          <div class="w-10 h-3 bg-slate-200 rounded animate-pulse"></div>
+          <div class="flex-1 h-5 bg-slate-200 rounded animate-pulse"></div>
+        </div>
+      </div>
+
+      <!-- 橫向長條圖（CSS，不需 chart 套件）-->
+      <div v-else-if="revenueData" class="space-y-2">
+        <div
+          v-for="(label, i) in revenueData.labels"
+          :key="label"
+          class="flex items-center gap-2 text-sm"
+        >
+          <!-- 標籤 -->
+          <span class="w-10 text-right text-slate-500 text-xs shrink-0">{{ label }}</span>
+          <!-- 進度條 -->
+          <div class="flex-1 bg-slate-100 rounded-full h-5 overflow-hidden">
+            <div
+              class="h-5 bg-brand-500 rounded-full transition-all duration-500 flex items-center justify-end pr-2"
+              :style="{ width: (revenueData.values[i] / revenueMax * 100) + '%' }"
+            >
+              <span
+                v-if="revenueData.values[i] > 0"
+                class="text-xs text-white font-medium whitespace-nowrap"
+              >NT$ {{ revenueData.values[i].toLocaleString() }}</span>
+            </div>
+          </div>
+          <!-- 無資料時顯示灰色文字 -->
+          <span v-if="revenueData.values[i] === 0" class="text-xs text-slate-300">—</span>
+        </div>
+      </div>
+
+      <div v-else class="text-sm text-slate-400">資料讀取失敗，請確認後端是否運行</div>
+    </div>
 
   </div>
 </template>

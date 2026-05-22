@@ -1,0 +1,57 @@
+# render.yaml — Render Infrastructure as Code
+# 把這個檔案推上 GitHub，然後在 Render Dashboard → "New Blueprint" 選你的 repo
+# Render 會自動建立下方定義的兩個服務
+#
+# 官方文件：https://render.com/docs/blueprint-spec
+
+services:
+
+  # ── 後端：FastAPI ─────────────────────────────────────────────
+  - type: web
+    name: food-order-backend
+    runtime: python
+    rootDir: backend
+    plan: free          # 免費方案，15 分鐘無流量會休眠
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+
+    envVars:
+      # ★ 這幾個要在 Render Dashboard 手動填入，不要寫進 render.yaml（安全）
+      - key: DATABASE_URL
+        sync: false            # sync: false = 部署後由你手動在 Dashboard 填值
+      - key: JWT_SECRET
+        generateValue: true    # Render 自動產生一個隨機值
+      - key: CORS_ORIGINS_STR
+        sync: false            # 填你的 frontend URL，例：https://food-order.onrender.com
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: menu-images     # 這個不敏感可以寫死
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+
+  # ── 前端：Vue + Vite Static Site（不會休眠！CDN 托管）───────────
+  - type: web
+    name: food-order-frontend
+    runtime: static
+    rootDir: frontend
+    plan: free
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+
+    envVars:
+      # Vite build 時吃這個，把 API URL 燒進 JS bundle
+      # ★ 填你的後端 URL，例：https://food-order-backend.onrender.com/api
+      - key: VITE_API_BASE_URL
+        sync: false
+
+    # SPA fallback：所有路由都回傳 index.html
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

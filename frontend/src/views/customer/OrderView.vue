@@ -34,6 +34,7 @@ interface CategoryBrief {
 interface Food {
   FoodID:     number
   FoodName:   string
+  FoodDesc:   string | null   // ← 餐點描述
   Price:      number
   categories: CategoryBrief[]   // ← 多對多，一道菜可屬於多個分類
   picture?:   { PicturePath: string } | null
@@ -288,9 +289,12 @@ onBeforeUnmount(() => ws?.close())
         <div v-else class="w-20 h-20 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-xs">
           無圖
         </div>
-        <div class="flex-1">
+        <div class="flex-1 min-w-0">
           <div class="font-medium">{{ f.FoodName }}</div>
-          <div class="text-brand-600 font-semibold">NT$ {{ f.Price }}</div>
+          <div v-if="f.FoodDesc" class="text-xs text-slate-400 mt-0.5 leading-relaxed line-clamp-2">
+            {{ f.FoodDesc }}
+          </div>
+          <div class="text-brand-600 font-semibold mt-1">NT$ {{ f.Price }}</div>
         </div>
         <button class="btn-primary text-sm" :disabled="table?.TableStatus !== 'ORDERING'" @click="addToCart(f)">
           +

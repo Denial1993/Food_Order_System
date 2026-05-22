@@ -17,6 +17,11 @@ class OrderSubmitIn(BaseModel):
     session_token: str | None = None    # 開桌時拿到的 UUID，驗證是否為本次入座的客人
 
 
+class CancelCustomerIn(BaseModel):
+    """POST /orders/{order_id}/cancel-customer 的 Request Body"""
+    session_token: str | None = None    # 必須符合桌位目前的 SessionToken
+
+
 class OrderDetailOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     FoodID: int
@@ -25,6 +30,7 @@ class OrderDetailOut(BaseModel):
     UnitPrice: Decimal
     Subtotal: Decimal
     Nickname: str | None
+    Note: str | None = None
 
 
 class OrderOut(BaseModel):

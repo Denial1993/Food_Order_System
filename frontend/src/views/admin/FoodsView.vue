@@ -56,7 +56,9 @@ const form = reactive({
   PictureName: '',
   AltText:     '',
 })
-const formError = ref('')
+const formError    = ref('')
+const uploading    = ref(false)   // 圖片上傳 loading
+const uploadError  = ref('')
 
 // ── 刪除確認 ──────────────────────────────────────────────────────
 const deleteTarget = ref<Food | null>(null)
@@ -146,6 +148,30 @@ async function submitForm() {
   } finally {
     saving.value = false
     setTimeout(() => (successMsg.value = ''), 2500)
+  }
+}
+
+/** 上傳圖片到 Supabase Storage，成功後自動填入 PicturePath */
+async function uploadImage(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  uploading.value   = true
+  uploadError.value = ''
+  const fd = new FormData()
+  fd.append('file', file)
+  try {
+    const res = await api.post<{ url: string }>('/admin/upload-image', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    form.PicturePath = res.data.url
+    if (!form.PictureName) form.PictureName = file.name.replace(/\.[^.]+$/, '')
+  } catch (err: unknown) {
+    const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    uploadError.value = msg ?? '上傳失敗'
+  } finally {
+    uploading.value = false
+    // 清空 input，讓同一張圖可以重複選
+    ;(e.target as HTMLInputElement).value = ''
   }
 }
 
@@ -394,11 +420,37 @@ onMounted(loadFoods)
           <!-- 圖片區塊 -->
           <div class="border-t border-slate-100 pt-4 space-y-3">
             <p class="text-xs text-slate-400 font-medium uppercase tracking-wide">圖片設定（選填）</p>
-            <div>
-              <label class="block text-sm font-medium text-slate-700 mb-1">圖片 URL</label>
-              <input v-model="form.PicturePath" type="url"
-                class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                placeholder="https://example.com/image.jpg" />
+
+            <!-- 上傳 or URL 二選一 -->
+            <div class="flex flex-col gap-2">
+              <!-- 本機上傳 -->
+              <label
+                class="flex items-center gap-2 cursor-pointer border-2 border-dashed border-slate-200 rounded-xl px-4 py-3 hover:border-brand-400 hover:bg-brand-50 transition"
+                :class="{ 'opacity-50 pointer-events-none': uploading }"
+              >
+                <svg class="w-5 h-5 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span class="text-sm text-slate-600">
+                  {{ uploading ? '上傳中...' : '從本機選擇圖片' }}
+                </span>
+                <input type="file" accept="image/*" class="sr-only" @change="uploadImage" />
+              </label>
+              <span v-if="uploadError" class="text-xs text-rose-500">{{ uploadError }}</span>
+
+              <!-- 分隔線 -->
+              <div class="flex items-center gap-2 text-xs text-slate-400">
+                <div class="flex-1 border-t border-slate-200"></div>
+                <span>或填入圖片網址</span>
+                <div class="flex-1 border-t border-slate-200"></div>
+              </div>
+
+              <div>
+                <input v-model="form.PicturePath" type="url"
+                  class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  placeholder="https://example.com/image.jpg" />
+              </div>
             </div>
             <div v-if="form.PicturePath" class="flex items-center gap-3">
               <img :src="form.PicturePath" alt="預覽"

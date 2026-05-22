@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
 from models import FoodData, FoodOrder, FoodOrderDetail, FoodSystemConfig, FoodTable
-from schemas.order import OrderOut, OrderSubmitIn
+from schemas.order import OrderOut, OrderSubmitIn, CancelCustomerIn
 
 
 def _enrich_order(order: FoodOrder) -> FoodOrder:
@@ -184,6 +184,83 @@ def submit_order(
     )
 
     return _enrich_order(order_with_details)
+
+
+def _get_cancel_window(db: Session) -> int:
+    """從 Food_SystemConfig 讀取顧客取消視窗（分鐘），找不到預設 5 分鐘"""
+    cfg = (
+        db.query(FoodSystemConfig)
+        .filter(
+            FoodSystemConfig.CodeStr == "CANCEL_WINDOW_MINUTES",
+            FoodSystemConfig.StatusCode == "111",
+        )
+        .first()
+    )
+    if cfg and cfg.CodeValue:
+        try:
+            return int(cfg.CodeValue)
+        except Exception:
+            pass
+    return 5
+
+
+@router.post("/cancel-customer/{order_id}")
+def cancel_order_by_customer(
+    order_id: int,
+    body: CancelCustomerIn,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    顧客自助取消訂單。
+
+    【業務規則】
+    1. 只能取消狀態為 OPEN（尚未備餐完成）的訂單。
+    2. 下單後超過 CANCEL_WINDOW_MINUTES（預設 5 分鐘）不可再取消。
+       — 廚房可能已開始備餐，食材損耗不宜退單。
+    3. 必須持有本次桌位的 SessionToken，防止陌生人取消別桌的訂單。
+       — 結帳或重新開桌後 Token 更換，舊 Session 的顧客無法取消新訂單。
+    4. 取消後桌位狀態維持 ORDERING，不影響同桌其他未結帳訂單。
+    """
+    order: FoodOrder | None = (
+        db.query(FoodOrder)
+        .filter(FoodOrder.OrderID == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.OrderStatus != "OPEN":
+        raise HTTPException(
+            status_code=409,
+            detail="只有「備餐中」的訂單可以取消",
+        )
+
+    # ── Token 驗證：確認是本次入座的客人 ─────────────────────────
+    table: FoodTable | None = (
+        db.query(FoodTable)
+        .filter(FoodTable.TableID == order.TableID)
+        .first()
+    )
+    if table and table.SessionToken:
+        if body.session_token != table.SessionToken:
+            raise HTTPException(
+                status_code=403,
+                detail="連線已過期，無法取消此訂單",
+            )
+
+    # ── 時間視窗：下單後 N 分鐘內才允許取消 ──────────────────────
+    if order.AddDate:
+        minutes_since = (datetime.now() - order.AddDate).total_seconds() / 60
+        window = _get_cancel_window(db)
+        if minutes_since > window:
+            raise HTTPException(
+                status_code=409,
+                detail=f"下單後超過 {window} 分鐘，無法自行取消，請聯絡店員",
+            )
+
+    order.OrderStatus = "CANCELLED"
+    order.UpdUser = "customer"
+    db.commit()
+    return {"detail": "訂單已取消", "OrderNo": order.OrderNo}
 
 
 @router.post("/checkout/{order_id}")

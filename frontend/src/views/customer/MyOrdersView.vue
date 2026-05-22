@@ -8,6 +8,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/api/client'
 
+// 取消視窗分鐘數（與後端預設相同，僅用於 UI 提示文字）
+const CANCEL_WINDOW_MIN = 5
+
 interface OrderDetail {
   FoodID: number
   FoodName: string
@@ -34,8 +37,10 @@ const router = useRouter()
 const tableNo  = computed(() => String(route.query.table ?? ''))
 const tableId  = computed(() => Number(route.query.tableId ?? 0))
 const orders   = ref<Order[]>([])
-const loading  = ref(true)
-const errorMsg = ref('')
+const loading    = ref(true)
+const errorMsg   = ref('')
+const cancellingId = ref<number | null>(null)   // 正在取消中的 OrderID
+const cancelError  = ref('')                     // 取消失敗訊息
 
 // 計算全桌總計（所有訂單加總）
 const grandTotal = computed(() =>
@@ -44,6 +49,32 @@ const grandTotal = computed(() =>
 const grandItems = computed(() =>
   orders.value.flatMap(o => o.details).reduce((s, d) => s + d.Quantity, 0)
 )
+
+/** 判斷訂單是否還在可取消時間窗 (OPEN + 下單未超過 CANCEL_WINDOW_MIN 分鐘) */
+function isCancellable(order: Order): boolean {
+  if (order.OrderStatus !== 'OPEN') return false
+  if (!order.AddDate) return false
+  const placed = new Date(order.AddDate).getTime()
+  const elapsed = (Date.now() - placed) / 60000
+  return elapsed <= CANCEL_WINDOW_MIN
+}
+
+/** 顧客自助取消：帶上本桌 SessionToken */
+async function cancelOrder(order: Order) {
+  const sessionToken = localStorage.getItem(`food.session.table.${tableNo.value}`)
+  cancellingId.value = order.OrderID
+  cancelError.value  = ''
+  try {
+    await api.post(`/orders/cancel-customer/${order.OrderID}`, { session_token: sessionToken })
+    order.OrderStatus = 'CANCELLED'   // 直接更新本地狀態，不需重整整頁
+  } catch (e: unknown) {
+    const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    cancelError.value = msg ?? '取消失敗，請聯絡店員'
+    setTimeout(() => (cancelError.value = ''), 4000)
+  } finally {
+    cancellingId.value = null
+  }
+}
 
 // 狀態 badge 樣式
 const statusLabel: Record<string, string> = {
@@ -93,6 +124,10 @@ onMounted(loadOrders)
         </div>
         <!-- 重整 -->
         <button class="text-slate-400 hover:text-brand-600" @click="loadOrders">↻</button>
+      </div>
+      <!-- 取消錯誤提示 -->
+      <div v-if="cancelError" class="bg-rose-100 text-rose-700 text-sm px-4 py-2">
+        {{ cancelError }}
       </div>
     </header>
 
@@ -144,12 +179,23 @@ onMounted(loadOrders)
               送出時間：{{ order.AddDate || '—' }}
             </div>
           </div>
-          <span
-            class="shrink-0 text-xs px-2 py-1 rounded-full font-medium"
-            :class="statusClass[order.OrderStatus] ?? 'bg-slate-100 text-slate-500'"
-          >
-            {{ statusLabel[order.OrderStatus] ?? order.OrderStatus }}
-          </span>
+          <div class="flex items-center gap-2 shrink-0">
+            <!-- 取消按鈕：只有 OPEN + 時間內才出現 -->
+            <button
+              v-if="isCancellable(order)"
+              class="text-xs text-rose-500 border border-rose-200 rounded-full px-3 py-1 hover:bg-rose-50 disabled:opacity-50"
+              :disabled="cancellingId === order.OrderID"
+              @click="cancelOrder(order)"
+            >
+              {{ cancellingId === order.OrderID ? '取消中...' : '取消訂單' }}
+            </button>
+            <span
+              class="text-xs px-2 py-1 rounded-full font-medium"
+              :class="statusClass[order.OrderStatus] ?? 'bg-slate-100 text-slate-500'"
+            >
+              {{ statusLabel[order.OrderStatus] ?? order.OrderStatus }}
+            </span>
+          </div>
         </div>
 
         <!-- 明細列表 -->

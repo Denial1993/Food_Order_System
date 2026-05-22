@@ -7,12 +7,16 @@
 
 FastAPI 會自動把 return 的 dict 轉成 JSON 回給前端。
 """
+import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import cast, Date, func  # func = SQL 函式 (sum/count...)
+import httpx
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import cast, Date, extract, func  # func = SQL 函式 (sum/count...)
 from sqlalchemy.orm import Session, selectinload
+
+from core.config import settings
 
 from database import get_db  # 取得 DB 連線的函式
 from models import (
@@ -133,6 +137,166 @@ def dashboard(
         "today_order_count": today_order_count,
         "table_stats":       table_stats,
         "recent_orders":     recent_list,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# POST /api/admin/upload-image  — 上傳圖片到 Supabase Storage
+# ─────────────────────────────────────────────────────────────────
+_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_MAX_SIZE_MB   = 5
+
+@router.post("/upload-image")
+async def upload_image(file: UploadFile = File(...)) -> dict:
+    """
+    接收前端上傳的圖片，存進 Supabase Storage，回傳公開 URL。
+
+    【流程】
+    1. 前端 FormData → FastAPI UploadFile
+    2. 後端轉發到 Supabase Storage REST API（PUT /storage/v1/object/{bucket}/{path}）
+    3. 回傳 { url, path }
+
+    【設定方式】
+    在後端 .env 填入：
+      SUPABASE_URL=https://xxxx.supabase.co
+      SUPABASE_SERVICE_KEY=eyJhbGciOi...  (service_role key)
+      SUPABASE_STORAGE_BUCKET=menu-images  (預先在 Supabase 建好的 public bucket)
+
+    【未設定 Supabase 時】
+    直接回傳錯誤提示（不影響其他功能，URL 輸入仍可用）。
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_KEY:
+        raise HTTPException(
+            status_code=501,
+            detail="圖片上傳尚未設定（後端未配置 SUPABASE_URL / SUPABASE_SERVICE_KEY）",
+        )
+
+    # ── 檔案類型與大小檢查 ───────────────────────────────────────
+    if file.content_type not in _ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="只允許 JPEG / PNG / WebP / GIF")
+
+    content = await file.read()
+    if len(content) > _MAX_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"圖片大小不可超過 {_MAX_SIZE_MB} MB")
+
+    # ── 產生唯一檔名，避免覆蓋 ──────────────────────────────────
+    ext = (file.filename or "image.jpg").rsplit(".", 1)[-1].lower()
+    unique_name = f"menu/{uuid.uuid4().hex}.{ext}"
+    bucket = settings.SUPABASE_STORAGE_BUCKET
+
+    # ── 上傳到 Supabase Storage ─────────────────────────────────
+    upload_url = f"{settings.SUPABASE_URL}/storage/v1/object/{bucket}/{unique_name}"
+    headers = {
+        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+        "Content-Type": file.content_type or "image/jpeg",
+        "x-upsert": "false",
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(upload_url, content=content, headers=headers)
+
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=502,
+            detail=f"上傳到 Supabase 失敗: {resp.text[:200]}",
+        )
+
+    public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{unique_name}"
+    return {"url": public_url, "path": unique_name}
+
+
+# ─────────────────────────────────────────────────────────────────
+# GET /api/admin/revenue  — 歷史營收分析
+# ─────────────────────────────────────────────────────────────────
+@router.get("/revenue")
+def revenue_stats(
+    mode:  str       = Query("annual",  description="annual | monthly | daily"),
+    year:  int | None = Query(None,     description="年份，例 2026"),
+    month: int | None = Query(None,     description="月份 1-12，僅 daily 模式使用"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    歷史營收分析（僅計算已結帳 PAID 訂單）。
+
+    - mode=annual  → 近 3 年各年度總額（不傳 year）
+    - mode=monthly → 指定年各月合計（需傳 year）
+    - mode=daily   → 指定年+月各天合計（需傳 year + month）
+
+    回傳格式: { "labels": [...], "values": [...], "total": float }
+    """
+    current_year = datetime.now().year
+
+    base_q = db.query(FoodOrder).filter(FoodOrder.OrderStatus == "PAID")
+
+    if mode == "annual":
+        # 近 3 年（含今年）
+        start_year = current_year - 2
+        rows = (
+            base_q
+            .filter(extract("year", FoodOrder.AddDate) >= start_year)
+            .with_entities(
+                extract("year", FoodOrder.AddDate).label("label"),
+                func.coalesce(func.sum(FoodOrder.TotalAmount), 0).label("revenue"),
+            )
+            .group_by(extract("year", FoodOrder.AddDate))
+            .order_by(extract("year", FoodOrder.AddDate))
+            .all()
+        )
+        # 補齊沒有資料的年份
+        revenue_map: dict[int, float] = {int(r.label): float(r.revenue) for r in rows}
+        labels = [str(y) for y in range(start_year, current_year + 1)]
+        values = [revenue_map.get(y, 0.0) for y in range(start_year, current_year + 1)]
+
+    elif mode == "monthly":
+        if not year:
+            year = current_year
+        rows = (
+            base_q
+            .filter(extract("year", FoodOrder.AddDate) == year)
+            .with_entities(
+                extract("month", FoodOrder.AddDate).label("label"),
+                func.coalesce(func.sum(FoodOrder.TotalAmount), 0).label("revenue"),
+            )
+            .group_by(extract("month", FoodOrder.AddDate))
+            .order_by(extract("month", FoodOrder.AddDate))
+            .all()
+        )
+        revenue_map = {int(r.label): float(r.revenue) for r in rows}
+        labels = [f"{m}月" for m in range(1, 13)]
+        values = [revenue_map.get(m, 0.0) for m in range(1, 13)]
+
+    elif mode == "daily":
+        if not year:
+            year = current_year
+        if not month:
+            month = datetime.now().month
+        import calendar
+        days_in_month = calendar.monthrange(year, month)[1]
+        rows = (
+            base_q
+            .filter(
+                extract("year",  FoodOrder.AddDate) == year,
+                extract("month", FoodOrder.AddDate) == month,
+            )
+            .with_entities(
+                extract("day", FoodOrder.AddDate).label("label"),
+                func.coalesce(func.sum(FoodOrder.TotalAmount), 0).label("revenue"),
+            )
+            .group_by(extract("day", FoodOrder.AddDate))
+            .order_by(extract("day", FoodOrder.AddDate))
+            .all()
+        )
+        revenue_map = {int(r.label): float(r.revenue) for r in rows}
+        labels = [f"{d}日" for d in range(1, days_in_month + 1)]
+        values = [revenue_map.get(d, 0.0) for d in range(1, days_in_month + 1)]
+
+    else:
+        raise HTTPException(status_code=400, detail="mode 需為 annual / monthly / daily")
+
+    return {
+        "mode":   mode,
+        "labels": labels,
+        "values": values,
+        "total":  sum(values),
     }
 
 
