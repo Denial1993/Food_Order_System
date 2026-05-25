@@ -12,6 +12,20 @@ import models  # noqa: F401  -- ensure all models are registered on Base.metadat
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── 啟動時顯示環境資訊，方便確認目前接的是哪個 DB ──────────
+    is_prod = bool(settings.DATABASE_URL)
+    db_hint = (
+        f"Supabase ({settings.DATABASE_URL.split('@')[-1].split('/')[0]})"
+        if is_prod else
+        f"Docker  ({settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME})"
+    )
+    print("=" * 55)
+    print(f"  APP : {settings.APP_NAME}")
+    print(f"  ENV : {settings.APP_ENV.upper()}")
+    print(f"  DB  : {db_hint}")
+    print(f"  DEBUG: {settings.DEBUG}")
+    print("=" * 55)
+
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -40,5 +54,9 @@ def root() -> dict[str, str]:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "healthy"}
+def health() -> dict:
+    return {
+        "status":  "healthy",
+        "env":     settings.APP_ENV,
+        "db_type": "supabase" if settings.DATABASE_URL else "docker",
+    }

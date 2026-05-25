@@ -49,6 +49,14 @@ interface Order {
 // 篩選 Tab 的選項型別
 type FilterStatus = 'ALL' | 'OPEN' | 'PAID' | 'CANCELLED'
 
+// 將原本寫在 Template 的 Tab 陣列抽離到這裡
+const filterTabs: { key: FilterStatus; label: string }[] = [
+  { key: 'ALL',       label: '全部'   },
+  { key: 'OPEN',      label: '待備餐' },
+  { key: 'PAID',      label: '已結帳' },
+  { key: 'CANCELLED', label: '已取消' },
+]
+
 // ── 響應式狀態 ─────────────────────────────────────────────────────
 const orders       = ref<Order[]>([])
 const loading      = ref(true)
@@ -87,7 +95,7 @@ const statusCfg: Record<string, { label: string; dot: string; badge: string }> =
 
 // ── 自動刷新 ──────────────────────────────────────────────────────
 let refreshTimer: ReturnType<typeof setInterval> | null = null
-const autoRefreshSec = ref(30)   // 倒數計秒，讓廚房知道下次刷新還多久
+// const autoRefreshSec = ref(30)   // 倒數計秒，讓廚房知道下次刷新還多久
 
 function startAutoRefresh() {
   // 每 30 秒自動呼叫一次 loadOrders
@@ -203,13 +211,8 @@ onBeforeUnmount(() => {
     -->
     <div class="flex gap-2 flex-wrap">
       <button
-        v-for="tab in ([
-          { key: 'ALL',       label: '全部'   },
-          { key: 'OPEN',      label: '待備餐' },
-          { key: 'PAID',      label: '已結帳' },
-          { key: 'CANCELLED', label: '已取消' },
-        ] as { key: FilterStatus; label: string }[])"
-        :key="tab.key"
+  v-for="tab in filterTabs"
+  :key="tab.key"
         class="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-medium transition"
         :class="filterStatus === tab.key
           ? 'bg-brand-600 text-white'
