@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, selectinload
 
 from database import get_db
-from models import FoodCategory, FoodData
+from models import FoodCategory, FoodData, FoodSystemConfig
 from schemas.menu import CategoryOut, FoodOut
 
 router = APIRouter()
@@ -41,3 +41,22 @@ def list_foods(
         q = q.filter(FoodData.categories.any(FoodCategory.CategoryID == category_id))
 
     return q.order_by(FoodData.Sort).all()
+
+
+@router.get("/payment-methods")
+def list_payment_methods(db: Session = Depends(get_db)) -> list[dict]:
+    """
+    回傳目前啟用的付款方式（公開，不需登入）。
+    資料來源：Food_SystemConfig，CodeType='付款方式'。
+    後台在系統參數新增/刪除後，這裡自動反映。
+    """
+    rows = (
+        db.query(FoodSystemConfig)
+        .filter(
+            FoodSystemConfig.CodeType == "付款方式",
+            FoodSystemConfig.StatusCode == "111",
+        )
+        .order_by(FoodSystemConfig.CodeSeq)
+        .all()
+    )
+    return [{"code": r.CodeStr, "label": r.CodeValue} for r in rows]

@@ -102,10 +102,9 @@ async function toggleOrders(tableId: number) {
     return
   }
   expanded.value = tableId
-  if (!tableOrders.value[tableId]) {
-    const res = await api.get<Order[]>(`/orders/table/${tableId}`)
-    tableOrders.value[tableId] = res.data
-  }
+  // 每次展開都重新拉，確保即時顯示最新訂單
+  const res = await api.get<Order[]>('/admin/orders', { params: { table_id: tableId } })
+  tableOrders.value[tableId] = res.data
 }
 
 onMounted(loadTables)
@@ -226,11 +225,16 @@ onMounted(loadTables)
               <span class="text-xs text-slate-400">{{ order.AddDate }}</span>
               <span
                 class="text-xs px-2 py-0.5 rounded-full"
-                :class="order.OrderStatus === 'PAID'
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-amber-100 text-amber-700'"
+                :class="{
+                  'bg-emerald-100 text-emerald-700': order.OrderStatus === 'PAID',
+                  'bg-amber-100 text-amber-700':    order.OrderStatus === 'OPEN',
+                  'bg-slate-100 text-slate-500':    order.OrderStatus === 'CANCELLED',
+                }"
               >
-                {{ order.OrderStatus === 'PAID' ? '已結帳' : '備餐中' }}
+                {{
+                  order.OrderStatus === 'PAID'      ? '已結帳' :
+                  order.OrderStatus === 'CANCELLED' ? '已取消' : '備餐中'
+                }}
               </span>
             </div>
           </div>

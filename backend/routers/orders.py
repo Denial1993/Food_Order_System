@@ -60,12 +60,26 @@ def _make_order_no(table_no: str) -> str:
 
 
 @router.get("/table/{table_id}", response_model=list[OrderOut])
-def get_table_orders(table_id: int, db: Session = Depends(get_db)) -> list[FoodOrder]:
-    """查詢某桌的所有訂單（含明細），供顧客「我的訂單」頁使用"""
+def get_table_orders(
+    table_id: int,
+    session_token: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[FoodOrder]:
+    """查詢某桌「本次入座」的訂單（含明細），供顧客「我的訂單」頁使用。
+
+    只回傳 SessionToken 與顧客手上 token 相符的訂單，避免新客人看到
+    上一組客人的歷史訂單。無 token 一律回空（不洩漏）。
+    店員後台走 /admin/orders（不過濾 token），不受此影響。
+    """
+    if not session_token:
+        return []
     orders = (
         db.query(FoodOrder)
         .options(selectinload(FoodOrder.details).selectinload(FoodOrderDetail.food))
-        .filter(FoodOrder.TableID == table_id)
+        .filter(
+            FoodOrder.TableID == table_id,
+            FoodOrder.SessionToken == session_token,
+        )
         .order_by(FoodOrder.AddDate.desc())
         .all()
     )
@@ -151,6 +165,8 @@ def submit_order(
         ServiceFee=service_fee,
         TotalAmount=total,
         OrderStatus="OPEN",
+        PaymentMethod=body.payment_method,
+        SessionToken=table.SessionToken,   # 記錄本次入座 session，供「我的訂單」過濾
         AddUser=body.nickname or "guest",
         StatusCode="111",
     )

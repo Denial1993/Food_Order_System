@@ -3,12 +3,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # pydantic-settings 讀取順序：左邊先讀，右邊蓋掉左邊
-    # .env             = 開發預設值（本機 Docker）
-    # .env.production  = 正式環境覆蓋（Supabase）；不存在時自動忽略
-    # OS 環境變數       = 最高優先（Render Dashboard 設的值）
+    # pydantic-settings 讀取順序（優先序由低到高）：
+    #   .env  → OS 環境變數（後者蓋前者）
+    #
+    # 設計原則（12-factor）：
+    # - 本機開發：值寫在 .env（已在 .gitignore，不會 commit）
+    # - 正式環境：值寫在部署平台（Render Dashboard → Environment），
+    #            不要放任何 .env.production 之類的檔案，避免本機誤讀
+    #            或不小心把密碼 commit 上去。
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.production"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

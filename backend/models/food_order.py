@@ -33,5 +33,11 @@ class FoodOrder(Base, AuditMixin):
     )
     PaymentMethod: Mapped[str | None] = mapped_column(String(20), nullable=True, comment="付款方式")
 
+    # 下單當下的桌位 SessionToken，用來區隔同一桌不同入座批次。
+    # 顧客「我的訂單」依此過濾，避免新客人看到上一組客人的訂單。
+    SessionToken: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, comment="下單當下的桌位 Session，用於區隔不同入座批次"
+    )
+
     table = relationship("FoodTable", back_populates="orders")
     details = relationship("FoodOrderDetail", back_populates="order", cascade="all, delete-orphan")

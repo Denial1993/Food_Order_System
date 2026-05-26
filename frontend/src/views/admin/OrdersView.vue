@@ -33,17 +33,18 @@ interface OrderDetail {
 }
 
 interface Order {
-  OrderID:     number
-  OrderNo:     string
-  TableNo:     string
-  TableName:   string | null
-  AddDate:     string
-  SubTotal:    number
-  ServiceFee:  number
-  TotalAmount: number
-  OrderStatus: 'OPEN' | 'PAID' | 'CANCELLED'
-  ItemCount:   number
-  details:     OrderDetail[]
+  OrderID:       number
+  OrderNo:       string
+  TableNo:       string
+  TableName:     string | null
+  AddDate:       string
+  SubTotal:      number
+  ServiceFee:    number
+  TotalAmount:   number
+  OrderStatus:   'OPEN' | 'PAID' | 'CANCELLED'
+  PaymentMethod: string | null
+  ItemCount:     number
+  details:       OrderDetail[]
 }
 
 // 篩選 Tab 的選項型別
@@ -364,6 +365,12 @@ onBeforeUnmount(() => {
               <div class="flex justify-between font-bold text-slate-800 pt-1 border-t border-slate-100">
                 <span>合計</span>
                 <span>NT$ {{ order.TotalAmount }}</span>
+              </div>
+              <div class="flex justify-between text-slate-500 pt-1 border-t border-slate-100">
+                <span>付款方式</span>
+                <span class="font-medium text-slate-700">
+                  {{ order.PaymentMethod ?? '未指定' }}
+                </span>
               </div>
             </div>
           </div>

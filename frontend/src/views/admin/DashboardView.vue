@@ -52,12 +52,13 @@ const revenueMax = computed(() => {
 // ── 資料型別定義（TypeScript interface）──────────────────────────
 // 這只是「告訴 TypeScript 這個物件長什麼樣子」，不影響執行
 interface RecentOrder {
-  OrderNo: string
-  TableNo: string
-  TotalAmount: number
-  OrderStatus: string
-  AddDate: string
-  Items: string
+  OrderNo:       string
+  TableNo:       string
+  TotalAmount:   number
+  OrderStatus:   string
+  PaymentMethod: string | null
+  AddDate:       string
+  Items:         string
 }
 
 interface DashboardData {
@@ -267,6 +268,7 @@ onMounted(() => {
                 <th class="pb-2 font-medium">桌號</th>
                 <th class="pb-2 font-medium">訂單編號</th>
                 <th class="pb-2 font-medium">餐點</th>
+                <th class="pb-2 font-medium text-center">付款方式</th>
                 <th class="pb-2 font-medium text-right">金額</th>
                 <th class="pb-2 font-medium text-center">狀態</th>
               </tr>
@@ -285,6 +287,9 @@ onMounted(() => {
                 <td class="py-2.5 font-medium">{{ order.TableNo }}</td>
                 <td class="py-2.5 font-mono text-xs text-slate-500">{{ order.OrderNo }}</td>
                 <td class="py-2.5 text-slate-600 max-w-48 truncate">{{ order.Items }}</td>
+                <td class="py-2.5 text-center text-slate-600 whitespace-nowrap">
+                  {{ order.PaymentMethod ?? '—' }}
+                </td>
                 <td class="py-2.5 text-right font-semibold">NT$ {{ order.TotalAmount }}</td>
                 <td class="py-2.5 text-center">
                   <!--
@@ -293,11 +298,16 @@ onMounted(() => {
                   -->
                   <span
                     class="text-xs px-2 py-0.5 rounded-full"
-                    :class="order.OrderStatus === 'PAID'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-amber-100 text-amber-700'"
+                    :class="{
+                      'bg-emerald-100 text-emerald-700': order.OrderStatus === 'PAID',
+                      'bg-amber-100 text-amber-700':    order.OrderStatus === 'OPEN',
+                      'bg-slate-100 text-slate-500':    order.OrderStatus === 'CANCELLED',
+                    }"
                   >
-                    {{ order.OrderStatus === 'PAID' ? '已結帳' : '備餐中' }}
+                    {{
+                      order.OrderStatus === 'PAID'      ? '已結帳' :
+                      order.OrderStatus === 'CANCELLED' ? '已取消' : '備餐中'
+                    }}
                   </span>
                 </td>
               </tr>

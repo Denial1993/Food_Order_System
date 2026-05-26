@@ -78,6 +78,12 @@ function saveToken(token: string | null) {
   else       localStorage.removeItem(sessionKey.value)
 }
 
+// 付款方式
+interface PaymentMethod { code: string; label: string }
+const paymentMethods   = ref<PaymentMethod[]>([])
+const showPaymentModal = ref(false)       // 控制付款方式選擇彈窗
+const selectedPayment  = ref<string>('')  // 目前選到的付款方式 code
+
 // 送單狀態
 const submitting = ref(false)
 const orderResult = ref<OrderResult | null>(null)   // 送單成功後的訂單資訊
@@ -96,14 +102,16 @@ const cartTotal = computed(() =>
 async function loadAll() {
   if (!tableNo.value) return
   try {
-    const [t, c, f] = await Promise.all([
+    const [t, c, f, p] = await Promise.all([
       api.get<TableInfo>(`/tables/${tableNo.value}`),
       api.get<Category[]>('/menu/categories'),
       api.get<Food[]>('/menu/foods'),
+      api.get<PaymentMethod[]>('/menu/payment-methods'),
     ])
-    table.value      = t.data
-    categories.value = c.data
-    foods.value      = f.data
+    table.value          = t.data
+    categories.value     = c.data
+    foods.value          = f.data
+    paymentMethods.value = p.data
 
     // 如果桌子已經是 ORDERING，且後端有 SessionToken，
     // 代表目前這桌已有人入座（可能是同桌其他人先開桌了）
@@ -162,8 +170,18 @@ async function confirmNickname() {
   connectWs()
 }
 
+/** 點「送出訂單」→ 先開付款方式選擇視窗 */
+function openPaymentModal() {
+  if (!cartTotal.value || !table.value) return
+  // 預設選第一個付款方式
+  selectedPayment.value = paymentMethods.value[0]?.code ?? ''
+  showPaymentModal.value = true
+}
+
+/** 顧客在付款視窗確認後，真正送出訂單 */
 async function submitOrder() {
   if (!cartTotal.value || !table.value || submitting.value) return
+  showPaymentModal.value = false
   submitting.value = true
   submitError.value = ''
 
@@ -180,9 +198,10 @@ async function submitOrder() {
     const res = await api.post<OrderResult>(
       `/orders/submit/${table.value.TableID}`,
       {
-        cart:          cartItems,
-        nickname:      customer.nickname || 'guest',
-        session_token: getLocalToken(),   // ← 帶上 Token，後端驗證是否為本次入座
+        cart:           cartItems,
+        nickname:       customer.nickname || 'guest',
+        session_token:  getLocalToken(),       // 帶上 Token，後端驗證是否為本次入座
+        payment_method: selectedPayment.value, // 顧客選的付款方式
       },
     )
     orderResult.value = res.data
@@ -302,6 +321,49 @@ onBeforeUnmount(() => ws?.close())
       </article>
     </section>
 
+    <!-- 付款方式選擇彈窗 -->
+    <div v-if="showPaymentModal" class="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-40">
+      <div class="card w-full max-w-sm space-y-4">
+        <h2 class="text-lg font-semibold">選擇付款方式</h2>
+        <p class="text-sm text-slate-500">請選擇您要使用的結帳方式</p>
+
+        <!-- 付款選項 -->
+        <div class="space-y-2">
+          <label
+            v-for="pm in paymentMethods"
+            :key="pm.code"
+            class="flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition"
+            :class="selectedPayment === pm.code
+              ? 'border-brand-500 bg-brand-50'
+              : 'border-slate-200 hover:bg-slate-50'"
+          >
+            <input
+              type="radio"
+              :value="pm.code"
+              v-model="selectedPayment"
+              class="accent-brand-600"
+            />
+            <span class="font-medium">{{ pm.label }}</span>
+          </label>
+          <!-- 後台沒設定任何付款方式時的提示 -->
+          <p v-if="!paymentMethods.length" class="text-sm text-slate-400 text-center py-2">
+            目前無可用的付款方式，請聯繫店員
+          </p>
+        </div>
+
+        <div class="flex gap-2 pt-1">
+          <button class="btn-ghost flex-1" @click="showPaymentModal = false">取消</button>
+          <button
+            class="btn-primary flex-1"
+            :disabled="!selectedPayment"
+            @click="submitOrder"
+          >
+            確認送出
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 送單成功彈窗 -->
     <div v-if="orderResult" class="fixed inset-0 bg-black/50 flex items-center justify-center p-6 z-40">
       <div class="card w-full max-w-sm space-y-4 text-center">
@@ -309,9 +371,12 @@ onBeforeUnmount(() => ws?.close())
         <h2 class="text-xl font-bold text-brand-600">訂單已送出！</h2>
         <div class="text-sm text-slate-600 space-y-1">
           <p>訂單編號：<span class="font-mono font-semibold">{{ orderResult.OrderNo }}</span></p>
-          <p>餐點小計：NT$ {{ orderResult.SubTotal }}</p>
-          <p v-if="orderResult.ServiceFee > 0">服務費：NT$ {{ orderResult.ServiceFee }}</p>
-          <p class="text-lg font-bold text-slate-900 pt-1">合計：NT$ {{ orderResult.TotalAmount }}</p>
+          <p>餐點小計：NT$ {{ Math.round(Number(orderResult.SubTotal)) }}</p>
+          <p v-if="Number(orderResult.ServiceFee) > 0">服務費：NT$ {{ Math.round(Number(orderResult.ServiceFee)) }}</p>
+          <p class="text-lg font-bold text-slate-900 pt-1">合計：NT$ {{ Math.round(Number(orderResult.TotalAmount)) }}</p>
+          <p v-if="selectedPayment" class="text-slate-500">
+            付款方式：{{ paymentMethods.find(p => p.code === selectedPayment)?.label ?? selectedPayment }}
+          </p>
         </div>
         <p class="text-xs text-slate-400">請稍候，餐點準備中...</p>
         <div class="flex flex-col gap-2">
@@ -342,11 +407,10 @@ onBeforeUnmount(() => ws?.close())
           <div class="text-xs text-slate-500">小計</div>
           <div class="text-xl font-bold">NT$ {{ cartTotal }}</div>
         </div>
-        <!-- ✅ 修正：補上 @click，加入 loading 狀態 -->
         <button
           class="btn-primary min-w-24"
           :disabled="!cartTotal || submitting"
-          @click="submitOrder"
+          @click="openPaymentModal"
         >
           <span v-if="submitting">送出中...</span>
           <span v-else>送出訂單</span>

@@ -95,7 +95,11 @@ async function loadOrders() {
     return
   }
   try {
-    const res = await api.get<Order[]>(`/orders/table/${tableId.value}`)
+    // 帶上本桌 SessionToken，後端只回本次入座的訂單（避免看到上一組客人的單）
+    const sessionToken = localStorage.getItem(`food.session.table.${tableNo.value}`)
+    const res = await api.get<Order[]>(`/orders/table/${tableId.value}`, {
+      params: { session_token: sessionToken },
+    })
     orders.value = res.data
   } catch {
     errorMsg.value = '載入訂單失敗，請確認後端是否運行'

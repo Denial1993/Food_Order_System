@@ -13,6 +13,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 from database import Base, SessionLocal, engine
 import models  # noqa: 確保所有 ORM 模型已註冊
 
+from core.security import hash_password
 from models import (
     FoodRole,
     FoodUser,
@@ -58,9 +59,10 @@ def seed() -> None:
         print(f"✅ 角色建立: {[r.RoleName for r in roles]}")
 
         # ── 2. 系統管理員帳號 ─────────────────────────────────────
+        # 密碼用 hash_password() 即時計算，避免硬寫過期/錯誤的雜湊
         admin = FoodUser(
             Account="admin",
-            Password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TiGniHZ9.W3bMGP9jI26fZALm5nG",  # admin123
+            Password=hash_password("admin123"),
             UserName="系統管理員",
             UserType="S",
             RoleID=admin_role.RoleID,
@@ -87,7 +89,7 @@ def seed() -> None:
 
         # ── 4. 桌位 (10 桌) ───────────────────────────────────────
         tables = [
-            FoodTable(TableNo="1",  TableName="靠窗A區", Seats=4, TableStatus="ORDERING", StatusCode="111", AddUser="seed"),
+            FoodTable(TableNo="1",  TableName="靠窗A區", Seats=4, TableStatus="IDLE",     StatusCode="111", AddUser="seed"),
             FoodTable(TableNo="2",  TableName="靠窗A區", Seats=4, TableStatus="IDLE",     StatusCode="111", AddUser="seed"),
             FoodTable(TableNo="3",  TableName="靠窗A區", Seats=2, TableStatus="IDLE",     StatusCode="111", AddUser="seed"),
             FoodTable(TableNo="4",  TableName="中央B區", Seats=6, TableStatus="IDLE",     StatusCode="111", AddUser="seed"),

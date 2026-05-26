@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const nav = [
   { to: '/admin/dashboard', label: '儀表板', icon: '📊' },
@@ -8,6 +9,14 @@ const nav = [
   { to: '/admin/orders', label: '訂單列表', icon: '📋' },
   { to: '/admin/config', label: '系統參數', icon: '⚙️' },
 ]
+
+const auth = useAuthStore()
+const router = useRouter()
+
+function onLogout() {
+  auth.logout()
+  router.replace({ name: 'admin-login' })
+}
 </script>
 
 <template>
@@ -29,6 +38,21 @@ const nav = [
           <span>{{ n.label }}</span>
         </RouterLink>
       </nav>
+
+      <!-- 登入者資訊 + 登出 -->
+      <div class="border-t border-slate-100 px-4 py-3 space-y-2">
+        <div class="text-xs text-slate-400">目前登入</div>
+        <div class="text-sm font-medium text-slate-700 truncate">
+          {{ auth.user?.UserName || auth.user?.Account || '—' }}
+        </div>
+        <button
+          type="button"
+          class="w-full text-xs text-slate-500 hover:text-red-600 border border-slate-200 hover:border-red-200 rounded px-2 py-1.5 transition-colors"
+          @click="onLogout"
+        >
+          登出
+        </button>
+      </div>
     </aside>
 
     <main class="flex-1 p-6">

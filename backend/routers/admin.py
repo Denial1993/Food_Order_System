@@ -121,12 +121,13 @@ def dashboard(
             if d.food
         )
         recent_list.append({
-            "OrderNo":     o.OrderNo,
-            "TableNo":     o.table.TableNo if o.table else "?",
-            "TotalAmount": float(o.TotalAmount),
-            "OrderStatus": o.OrderStatus,
-            "AddDate":     o.AddDate.strftime("%H:%M") if o.AddDate else "",
-            "Items":       items_str or "（無明細）",
+            "OrderNo":       o.OrderNo,
+            "TableNo":       o.table.TableNo if o.table else "?",
+            "TotalAmount":   float(o.TotalAmount),
+            "OrderStatus":   o.OrderStatus,
+            "PaymentMethod": o.PaymentMethod,
+            "AddDate":       o.AddDate.strftime("%H:%M") if o.AddDate else "",
+            "Items":         items_str or "（無明細）",
         })
 
     # ── 組合最終回傳資料 ──────────────────────────────────────────
@@ -628,8 +629,9 @@ def delete_food(food_id: int, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────
 @router.get("/orders")
 def list_orders_admin(
-    status: str | None = Query(None, description="篩選狀態: OPEN / PAID / CANCELLED"),
-    date:   str | None = Query(None, description="篩選日期 YYYY-MM-DD，不填代表今天"),
+    status:   str | None = Query(None, description="篩選狀態: OPEN / PAID / CANCELLED"),
+    date:     str | None = Query(None, description="篩選日期 YYYY-MM-DD，不填代表今天"),
+    table_id: int | None = Query(None, description="篩選桌位 ID（桌位管理展開用，不限日期）"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """
@@ -645,7 +647,25 @@ def list_orders_admin(
     用 selectinload 一次把三層關聯全部載入，
     避免每一筆訂單都多查一次 DB（N+1 問題）。
     """
-    # ① 解析日期（預設今天）
+    # ① 如果傳了 table_id，切換成「桌位模式」：不限日期，只看這桌
+    if table_id is not None:
+        q = (
+            db.query(FoodOrder)
+            .options(
+                selectinload(FoodOrder.details).selectinload(FoodOrderDetail.food),
+                selectinload(FoodOrder.table),
+            )
+            .filter(
+                FoodOrder.StatusCode == "111",
+                FoodOrder.TableID == table_id,
+            )
+        )
+        if status:
+            q = q.filter(FoodOrder.OrderStatus == status)
+        orders = q.order_by(FoodOrder.AddDate.desc()).all()
+        return [_order_to_dict(o) for o in orders]
+
+    # ② 一般模式：按日期篩選（預設今天）
     if date is None:
         filter_date = datetime.now().date()
     else:
@@ -654,7 +674,6 @@ def list_orders_admin(
         except ValueError:
             raise HTTPException(status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD")
 
-    # ② 建立查詢
     q = (
         db.query(FoodOrder)
         .options(
@@ -666,8 +685,6 @@ def list_orders_admin(
             cast(FoodOrder.AddDate, Date) == filter_date,
         )
     )
-
-    # ③ 狀態篩選（選填）
     if status:
         q = q.filter(FoodOrder.OrderStatus == status)
 
@@ -686,9 +703,10 @@ def _order_to_dict(o: FoodOrder) -> dict:
         "SubTotal":    float(o.SubTotal),
         "ServiceFee":  float(o.ServiceFee),
         "TotalAmount": float(o.TotalAmount),
-        "OrderStatus": o.OrderStatus,
+        "OrderStatus":   o.OrderStatus,
+        "PaymentMethod": o.PaymentMethod,
         # 方便前端顯示「共 N 道」
-        "ItemCount":   sum(d.Quantity for d in o.details),
+        "ItemCount":     sum(d.Quantity for d in o.details),
         "details": [
             {
                 "FoodName":  d.food.FoodName if d.food else "（餐點已刪除）",
