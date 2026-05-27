@@ -142,31 +142,34 @@ function addToCart(food: Food) {
 }
 
 /**
+ * 若桌子是 IDLE 就自動呼叫開桌 API，並儲存新 SessionToken。
+ * 供「確認暱稱」和「老顧客重回頁面」兩個入口共用。
+ */
+async function ensureTableOpen() {
+  if (!table.value || table.value.TableStatus !== 'IDLE') return
+  opening.value = true
+  try {
+    const res = await api.post<TableInfo>(`/tables/${table.value.TableNo}/open`)
+    table.value = res.data
+    saveToken(res.data.SessionToken)
+  } catch {
+    // 可能有人搶先開了，重拉最新桌況（會同步到新 token）
+    await loadAll()
+  } finally {
+    opening.value = false
+  }
+}
+
+/**
  * 顧客確認暱稱後：
- *  - 如果桌子是 IDLE → 自動呼叫開桌 API（不需要等店員！）
+ *  - 如果桌子是 IDLE → 自動開桌（不需要等店員！）
  *  - 開桌成功 → 後端回傳新 SessionToken → 存 localStorage
  *  - 然後連接 WebSocket 開始同步購物車
  */
 async function confirmNickname() {
   if (!nicknameInput.value.trim()) return
   customer.setNickname(nicknameInput.value.trim())
-
-  // 桌子是 IDLE → 自動開桌
-  if (table.value?.TableStatus === 'IDLE') {
-    opening.value = true
-    try {
-      const res = await api.post<TableInfo>(`/tables/${table.value.TableNo}/open`)
-      // 更新本地桌況 + 儲存新 Token
-      table.value = res.data
-      saveToken(res.data.SessionToken)
-    } catch {
-      // 如果開桌失敗（可能有人搶先開了），重新拉一次桌況
-      await loadAll()
-    } finally {
-      opening.value = false
-    }
-  }
-
+  await ensureTableOpen()
   connectWs()
 }
 
@@ -219,7 +222,12 @@ async function submitOrder() {
 
 onMounted(async () => {
   await loadAll()
-  if (customer.nickname) connectWs()
+  if (customer.nickname) {
+    // 老顧客（localStorage 已有暱稱）：跳過輸入彈窗，但仍需自動開桌再連 WS
+    // 若桌子已是 ORDERING（別人先開了 / 管理員開的）→ ensureTableOpen 直接跳過
+    await ensureTableOpen()
+    connectWs()
+  }
 })
 onBeforeUnmount(() => ws?.close())
 </script>
