@@ -113,12 +113,12 @@ async function loadAll() {
     foods.value          = f.data
     paymentMethods.value = p.data
 
-    // 如果桌子已經是 ORDERING，且後端有 SessionToken，
-    // 代表目前這桌已有人入座（可能是同桌其他人先開桌了）
-    // 把 Token 存起來供後續送單使用
-    if (t.data.SessionToken) {
-      saveToken(t.data.SessionToken)
-    }
+    // 永遠以伺服器的 SessionToken 為準，覆蓋 localStorage 裡的任何舊值。
+    // ‣ 後端有 Token  → 存入（包含「換了新客人、Token 已更新」的情境）
+    // ‣ 後端回傳 null → 清除（桌子 IDLE，沒有有效 session）
+    // 這樣即使顧客的手機 localStorage 存有前幾次的舊 Token，
+    // 每次進頁面都會自動同步，不會拿舊 Token 送單被後端拒絕。
+    saveToken(t.data.SessionToken)
   } catch {
     /* 後端尚未啟動時不影響畫面 */
   }
